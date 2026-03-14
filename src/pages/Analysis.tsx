@@ -3,168 +3,440 @@ import { useEffect, useState } from "react";
 import { useNavigate } from "react-router-dom";
 import DashboardLayout from "@/components/layout/DashboardLayout";
 import { Button } from "@/components/ui/button";
+import { cn } from "@/lib/utils";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
+import { Badge } from "@/components/ui/badge";
 import { Accordion, AccordionContent, AccordionItem, AccordionTrigger } from "@/components/ui/accordion";
 import { useToast } from "@/hooks/use-toast";
-import { ListTodo, Zap, Network, ArrowRight, CheckCircle2, AlertCircle, ShieldCheck, Loader2 } from "lucide-react";
+import { FileText, ListTodo, Zap, Clock, Network, ArrowRight, CheckCircle2, AlertCircle } from "lucide-react";
+
+import { jsPDF } from "jspdf";
 
 interface ParsedData {
   projectName: string;
-  features: string[];
-  stories: { id: string; story: string; acceptanceCriteria: string[] }[];
-  tasks: { id: string; title: string; complexity: number }[];
+  features: any[];
+  stories: any[];
+  tasks: any[];
   healthScore: { score: number; issues: string[] };
 }
+
+const fallbackData: ParsedData = {
+  projectName: "Analyzing Project...",
+  features: [],
+  stories: [],
+  tasks: [],
+  healthScore: { score: 0, issues: [] }
+};
 
 export default function Analysis() {
   const navigate = useNavigate();
   const { toast } = useToast();
-  const [data, setData] = useState<ParsedData | null>(null);
-  const [isInitialized, setIsInitialized] = useState(false);
+
+  // Dynamic States
+  const [data, setData] = useState<ParsedData>(fallbackData);
+  const [extractedFeatures, setExtractedFeatures] = useState<any[]>([]);
+  const [detectedAmbiguities, setDetectedAmbiguities] = useState<any[]>([]);
+  const [missingRequirements, setMissingRequirements] = useState<any[]>([]);
 
   useEffect(() => {
-  const rawSavedData = localStorage.getItem("blueprint_project_data");
-  
-  if (rawSavedData) {
-    try {
-      const parsed = JSON.parse(rawSavedData);
-      const root = parsed.data || parsed;
+    const rawData = localStorage.getItem("blueprint_project_data");
+    if (rawData) {
+      try {
+        const parsed = JSON.parse(rawData);
+        console.log("Analysis Debug - Raw Data:", parsed);
 
-      // 1. Stories Recovery (Keep this, it's working!)
-      let finalStories = root.stories || root.userStories || [];
-      if (finalStories.length === 0 && root.features) {
-        finalStories = root.features.map((f: string, i: number) => ({
-          id: `US-${i + 1}`,
-          story: f,
-          acceptanceCriteria: ["Technical requirement must be verified"]
-        }));
-      }
+        // 1. Set Top-level Data
+        setData({
+          projectName: parsed.projectName || "Untitled Project",
+          features: parsed.features || [],
+          stories: parsed.stories || [],
+          tasks: parsed.tasks || [],
+          healthScore: parsed.healthScore || { score: 0, issues: [] }
+        });
 
-      // 2. Health Score - Let's be less restrictive. 
-      // Even if the score is 0, we want to show it.
-      const rawHealth = root.healthScore || root.health_score || { score: 0, issues: ["No issues identified"] };
+        // 2. Safely format Features
+        if (parsed.features && Array.isArray(parsed.features)) {
+          const formattedFeatures = parsed.features.map((f: any, index: number) => {
+            const featureId = f.id || `feat-${index}`;
+            // Count tasks that belong to this feature
+            const taskCount = (parsed.tasks || []).filter((t: any) => t.featureId === featureId).length;
 
-      const validatedData: ParsedData = {
-        projectName: root.projectName || root.project_name || "Project Analysis",
-        features: root.features || [],
-        stories: finalStories,
-        tasks: root.tasks || root.backlog || [],
-        healthScore: {
-          // Explicitly check for 'undefined' rather than 'falsy' (since 0 is falsy)
-          score: rawHealth.score !== undefined ? rawHealth.score : 0,
-          issues: Array.isArray(rawHealth.issues) && rawHealth.issues.length > 0 
-            ? rawHealth.issues 
-            : ["Analysis complete"]
+            if (typeof f === 'string') {
+              return { id: featureId, title: f, description: "Extracted feature.", complexity: "Medium", tasks: taskCount };
+            }
+            return {
+              id: featureId,
+              title: f.title || f.name || "Unnamed Feature",
+              description: f.description || "No description provided.",
+              complexity: f.complexity || "Medium",
+              tasks: taskCount
+            };
+          });
+          setExtractedFeatures(formattedFeatures);
         }
-      };
 
-      console.log("RE-VERIFIED DATA:", validatedData);
-      setData(validatedData);
-    } catch (error) {
-      console.error("Mapping Error:", error);
+        // 3. Safely format Ambiguities
+        if (parsed.ambiguities && Array.isArray(parsed.ambiguities)) {
+          const formattedAmbiguities = parsed.ambiguities.map((a: any, index: number) => {
+            if (typeof a === 'string') {
+              return { id: `amb-${index}`, title: "Detected Ambiguity", description: a, severity: "Medium" };
+            }
+            return {
+              id: a.id || `amb-${index}`,
+              title: a.title || a.issue || "Detected Ambiguity",
+              description: a.description || a.context || a.text || "Needs clarification.",
+              severity: a.severity || "Medium"
+            };
+          });
+          setDetectedAmbiguities(formattedAmbiguities);
+        }
+
+        // 4. Map AI 'Clarifications' to your 'Missing Requirements' UI
+        if (parsed.clarifications && Array.isArray(parsed.clarifications)) {
+          const formattedMissing = parsed.clarifications.map((req: any, index: number) => {
+            if (typeof req === 'string') {
+              return { id: `miss-${index}`, title: "Missing Detail", description: req, feature: "General" };
+            }
+            return {
+              id: req.id || `miss-${index}`,
+              title: req.title || req.question || "Clarification Needed",
+              description: req.description || req.reason || req.context || "Required for accurate architecture.",
+              feature: req.feature || req.category || "General Architecture"
+            };
+          });
+          setMissingRequirements(formattedMissing);
+        }
+
+        console.log("Analysis Debug - Final States:", {
+          ambiguitiesCount: detectedAmbiguities.length,
+          missingCount: missingRequirements.length
+        });
+
+      } catch (e) {
+        console.error("Error parsing blueprint data", e);
+      }
     }
-  }
-  setIsInitialized(true);
   }, []);
 
-  if (!isInitialized) {
-    return (
-      <DashboardLayout>
-        <div className="flex flex-col items-center justify-center h-[60vh]"><Loader2 className="animate-spin text-primary" /></div>
-      </DashboardLayout>
-    );
-  }
+  // Dynamic estimations based on actual AI generated tasks
+  const totalTasks = data.tasks.length || extractedFeatures.reduce((acc, f) => acc + (f.tasks || 0), 0);
+  const estimatedWeeks = Math.max(1, Math.ceil(totalTasks / 15));
+  const overallComplexity = totalTasks > 50 ? "High" : totalTasks > 20 ? "Medium" : "Low";
 
-  if (!data) {
-    return (
-      <DashboardLayout>
-        <div className="flex flex-col items-center justify-center h-[60vh] text-center">
-          <AlertCircle className="w-12 h-12 text-zinc-600 mb-4" />
-          <h2 className="text-xl font-bold text-white mb-2">No Analysis Data</h2>
-          <Button onClick={() => navigate("/dashboard/upload")} className="bg-primary text-white">Go to Upload</Button>
-        </div>
-      </DashboardLayout>
-    );
-  }
+  const handleExport = () => {
+    try {
+      toast({ title: "Exporting Report", description: "Generating PDF analysis report..." });
+
+      const doc = new jsPDF();
+      let yPos = 20;
+
+      // Helper for clean text wrapping
+      const addWrappedText = (text: string, x: number, y: number, maxWidth: number) => {
+        const lines = doc.splitTextToSize(text, maxWidth);
+        doc.text(lines, x, y);
+        return y + (lines.length * 7);
+      };
+
+      // Header
+      doc.setFontSize(22);
+      doc.setTextColor(249, 115, 22); // Primary orange
+      doc.text("Project Blueprint Analysis", 20, yPos);
+      yPos += 12;
+
+      doc.setFontSize(14);
+      doc.setTextColor(100, 100, 100);
+      doc.text(data.projectName, 20, yPos);
+      yPos += 15;
+
+      // Metrics Summary
+      doc.setDrawColor(230, 230, 230);
+      doc.setFillColor(245, 245, 245);
+      doc.rect(20, yPos, 170, 30, 'F');
+      
+      doc.setFontSize(10);
+      doc.setTextColor(50, 50, 50);
+      doc.text(`Health Score: ${data.healthScore.score}/100`, 30, yPos + 12);
+      doc.text(`Estimated Timeline: ~${estimatedWeeks} Weeks`, 30, yPos + 20);
+      doc.text(`Complexity: ${overallComplexity}`, 100, yPos + 12);
+      doc.text(`Total Tasks: ${totalTasks}`, 100, yPos + 20);
+      yPos += 45;
+
+      // Section: Features
+      doc.setFontSize(16);
+      doc.setTextColor(0, 0, 0);
+      doc.text("Extracted Features", 20, yPos);
+      yPos += 10;
+      
+      extractedFeatures.forEach((f) => {
+        if (yPos > 260) { doc.addPage(); yPos = 20; }
+        doc.setFontSize(12);
+        doc.setFont("helvetica", "bold");
+        doc.text(`• ${f.title}`, 20, yPos);
+        yPos += 7;
+        doc.setFont("helvetica", "normal");
+        doc.setFontSize(10);
+        yPos = addWrappedText(f.description, 25, yPos, 160);
+        yPos += 5;
+      });
+      yPos += 10;
+
+      // Section: Ambiguities
+      if (detectedAmbiguities.length > 0) {
+        if (yPos > 240) { doc.addPage(); yPos = 20; }
+        doc.setFontSize(16);
+        doc.text("Detected Ambiguities", 20, yPos);
+        yPos += 10;
+        
+        detectedAmbiguities.forEach((a) => {
+          if (yPos > 260) { doc.addPage(); yPos = 20; }
+          doc.setFontSize(11);
+          doc.setFont("helvetica", "bold");
+          doc.text(`! [${a.severity}] ${a.title}`, 20, yPos);
+          yPos += 6;
+          doc.setFont("helvetica", "normal");
+          doc.setFontSize(10);
+          yPos = addWrappedText(a.description, 25, yPos, 160);
+          yPos += 5;
+        });
+        yPos += 10;
+      }
+
+      // Section: Missing Reqs
+      if (missingRequirements.length > 0) {
+        if (yPos > 240) { doc.addPage(); yPos = 20; }
+        doc.setFontSize(16);
+        doc.text("Clarifications Needed", 20, yPos);
+        yPos += 10;
+        
+        missingRequirements.forEach((m) => {
+          if (yPos > 260) { doc.addPage(); yPos = 20; }
+          doc.setFontSize(11);
+          doc.setFont("helvetica", "bold");
+          doc.text(`? ${m.title}`, 20, yPos);
+          yPos += 6;
+          doc.setFont("helvetica", "normal");
+          doc.setFontSize(10);
+          yPos = addWrappedText(m.description, 25, yPos, 160);
+          yPos += 5;
+        });
+      }
+
+      doc.save(`${data.projectName.replace(/\s+/g, '-').toLowerCase()}-analysis.pdf`);
+
+      toast({
+        title: "Export Success",
+        description: "Your report has been downloaded."
+      });
+    } catch (err) {
+      console.error("Export error", err);
+      toast({
+        variant: "destructive",
+        title: "Export Failed",
+        description: "Could not generate PDF report."
+      });
+    }
+  };
 
   return (
     <DashboardLayout>
       <div className="flex flex-col md:flex-row justify-between items-start md:items-center mb-8 gap-4">
         <div>
           <h1 className="text-3xl font-bold text-white tracking-tight">{data.projectName}</h1>
-          <p className="text-zinc-400 mt-1">Technical Roadmap</p>
+          <p className="text-zinc-400 mt-1">Technical Roadmap & Analysis</p>
         </div>
         <div className="flex gap-3">
-          <Button variant="outline" className="bg-zinc-950 border-zinc-700 text-white">Export</Button>
-          <Button onClick={() => navigate("/dashboard/tasks")} className="bg-primary text-white gap-2">
-            View Tasks <ArrowRight className="w-4 h-4" />
+          <Button
+            variant="outline"
+            className="bg-orange-600 border-orange-700 text-white hover:bg-orange-700"
+            onClick={handleExport}
+          >
+            Export Report
           </Button>
         </div>
       </div>
 
+      {/* 3-Panel Layout Grid */}
       <div className="grid grid-cols-1 lg:grid-cols-12 gap-6 h-[calc(100vh-12rem)] min-h-[600px]">
-        
-        {/* Panel 1: Health */}
-        <Card className="lg:col-span-3 bg-zinc-900 border-zinc-800 flex flex-col overflow-hidden">
-          <CardHeader className="border-b border-zinc-800 pb-4 bg-zinc-950/50">
-            <CardTitle className="text-white text-sm flex items-center gap-2">
-              <ShieldCheck className="w-4 h-4 text-green-400" /> Health
-            </CardTitle>
-          </CardHeader>
-          <CardContent className="p-4">
-            <div className="p-4 bg-zinc-950 rounded-lg border border-zinc-800 text-center mb-4">
-              <p className="text-4xl font-black text-green-500">{data.healthScore.score}%</p>
-            </div>
-            <ul className="space-y-2 text-sm text-zinc-400">
-              {data.healthScore.issues.map((issue, i) => (
-                <li key={i} className="flex gap-2"><span className="text-amber-500">•</span>{issue}</li>
-              ))}
-            </ul>
-          </CardContent>
-        </Card>
 
-        {/* Panel 2: Stories */}
-        <Card className="lg:col-span-6 bg-zinc-900 border-zinc-800 flex flex-col overflow-hidden">
-          <CardHeader className="border-b border-zinc-800 pb-4 bg-zinc-950/50">
-            <CardTitle className="text-white text-sm flex items-center justify-between">
-              <div className="flex items-center gap-2"><ListTodo className="w-4 h-4 text-primary" /> Stories</div>
-              <span className="text-xs bg-primary/10 text-primary px-2 py-0.5 rounded">{data.stories.length}</span>
-            </CardTitle>
-          </CardHeader>
-          <CardContent className="flex-1 overflow-y-auto p-4">
-            <Accordion type="single" collapsible className="w-full">
-              {data.stories.map((item, index) => (
-                <AccordionItem key={index} value={`item-${index}`} className="border-zinc-800">
-                  <AccordionTrigger className="text-white text-sm hover:no-underline py-3">
-                    <div className="flex items-center gap-3">
-                      <span className="w-6 h-6 rounded bg-zinc-800 flex items-center justify-center text-[10px]">{item.id}</span>
-                      <span className="text-left">{item.story}</span>
-                    </div>
-                  </AccordionTrigger>
-                  <AccordionContent className="text-zinc-400 bg-zinc-950/30 p-4 rounded-md">
-                    <p className="text-[10px] font-bold uppercase mb-2">Acceptance Criteria</p>
-                    <ul className="space-y-1">
-                      {item.acceptanceCriteria.map((ac, i) => (
-                        <li key={i} className="text-xs flex gap-2"><CheckCircle2 className="w-3 h-3 text-green-500" />{ac}</li>
-                      ))}
-                    </ul>
-                  </AccordionContent>
-                </AccordionItem>
-              ))}
-            </Accordion>
-          </CardContent>
-        </Card>
+        {/* Main Content Area (col-span-9) */}
+        <div className="lg:col-span-9 space-y-6 overflow-y-auto pr-2 custom-scrollbar">
 
-        {/* Panel 3: Stats */}
-        <div className="lg:col-span-3 space-y-6">
-          <Card className="bg-zinc-900 border-zinc-800"><CardContent className="pt-6">
-            <div className="flex items-center gap-2 text-xs font-bold text-zinc-500 uppercase mb-2"><Zap className="w-4 h-4 text-amber-500" /> Tasks</div>
-            <div className="text-3xl font-bold text-white">{data.tasks.length}</div>
-          </CardContent></Card>
-          <Card className="bg-zinc-900 border-zinc-800"><CardContent className="pt-6">
-            <div className="flex items-center gap-2 text-xs font-bold text-zinc-500 uppercase mb-2"><Network className="w-4 h-4 text-primary" /> Modules</div>
-            <div className="text-3xl font-bold text-white">{data.features.length}</div>
-          </CardContent></Card>
+          {/* Section 1: Extracted Features */}
+          <Card className="bg-zinc-900 border-zinc-800 flex flex-col overflow-hidden">
+            <CardHeader className="border-b border-zinc-800 pb-4 bg-zinc-950/50">
+              <CardTitle className="text-white text-sm flex items-center justify-between">
+                <div className="flex items-center gap-2">
+                  <ListTodo className="w-4 h-4 text-primary" />
+                  Extracted Features
+                </div>
+                <span className="bg-primary/10 text-primary px-2 py-0.5 rounded text-xs font-medium">
+                  {extractedFeatures.length} Found
+                </span>
+              </CardTitle>
+            </CardHeader>
+            <CardContent className="p-4">
+              {extractedFeatures.length > 0 ? (
+                <Accordion type="single" collapsible className="w-full">
+                  {extractedFeatures.map((feature) => (
+                    <AccordionItem key={feature.id} value={feature.id} className="border-zinc-800">
+                      <AccordionTrigger className="text-white hover:text-primary hover:no-underline py-4">
+                        <div className="flex items-center gap-3 text-left">
+                          <CheckCircle2 className="w-4 h-4 text-green-500 hidden sm:block shrink-0" />
+                          <span className="font-semibold">{feature.title}</span>
+                        </div>
+                      </AccordionTrigger>
+                      <AccordionContent className="text-zinc-400">
+                        <p className="mb-4 leading-relaxed">{feature.description}</p>
+                        <div className="flex flex-wrap gap-4">
+                          <div className="flex items-center gap-1 text-xs bg-zinc-950 px-2.5 py-1.5 rounded-md border border-zinc-800">
+                            <Zap className="w-3.5 h-3.5 text-amber-500" />
+                            Complexity: <span className="text-white font-medium ml-1">{feature.complexity}</span>
+                          </div>
+                          <div className="flex items-center gap-1 text-xs bg-zinc-950 px-2.5 py-1.5 rounded-md border border-zinc-800">
+                            <ListTodo className="w-3.5 h-3.5 text-primary" />
+                            <span className="text-white font-medium mx-1">{feature.tasks}</span> Tasks
+                          </div>
+                        </div>
+                      </AccordionContent>
+                    </AccordionItem>
+                  ))}
+                </Accordion>
+              ) : (
+                <div className="text-center py-6 text-zinc-500 text-sm">No features extracted.</div>
+              )}
+            </CardContent>
+          </Card>
+
+          {/* Section 2: Ambiguities Detected */}
+          <Card className="bg-zinc-900 border-zinc-800 flex flex-col overflow-hidden">
+            <CardHeader className="border-b border-zinc-800 pb-4 bg-zinc-950/50">
+              <CardTitle className="text-white text-sm flex items-center justify-between">
+                <div className="flex items-center gap-2">
+                  <AlertCircle className="w-4 h-4 text-amber-500" />
+                  Ambiguities Detected
+                </div>
+                <span className="bg-amber-500/10 text-amber-500 px-2 py-0.5 rounded text-xs font-medium">
+                  {detectedAmbiguities.length} Found
+                </span>
+              </CardTitle>
+            </CardHeader>
+            <CardContent className="p-4">
+              {detectedAmbiguities.length > 0 ? (
+                <Accordion type="single" collapsible className="w-full">
+                  {detectedAmbiguities.map((ambiguity) => (
+                    <AccordionItem key={ambiguity.id} value={ambiguity.id} className="border-zinc-800">
+                      <AccordionTrigger className="text-white hover:text-amber-400 hover:no-underline py-4">
+                        <div className="flex items-center gap-3 text-left">
+                          <AlertCircle className="w-4 h-4 text-amber-500 hidden sm:block shrink-0" />
+                          <span className="font-semibold">{ambiguity.title}</span>
+                        </div>
+                      </AccordionTrigger>
+                      <AccordionContent className="text-zinc-400">
+                        <p className="mb-4 leading-relaxed">{ambiguity.description}</p>
+                        <div className="flex items-center gap-2 text-xs bg-zinc-950 px-2.5 py-1.5 rounded-md border border-zinc-800 w-fit">
+                          <span className="text-zinc-500 capitalize">Severity:</span>
+                          <span className={cn(
+                            "font-bold",
+                            ambiguity.severity?.toLowerCase() === "high" ? "text-red-400" : "text-amber-400"
+                          )}>{ambiguity.severity}</span>
+                        </div>
+                      </AccordionContent>
+                    </AccordionItem>
+                  ))}
+                </Accordion>
+              ) : (
+                <div className="text-center py-6 text-zinc-500 text-sm">No ambiguities detected in PRD!</div>
+              )}
+            </CardContent>
+          </Card>
+
+          {/* Section 3: Missing Requirements (Mapped from AI Clarifications) */}
+          <Card className="bg-zinc-900 border-zinc-800 flex flex-col overflow-hidden">
+            <CardHeader className="border-b border-zinc-800 pb-4 bg-zinc-950/50">
+              <CardTitle className="text-white text-sm flex items-center justify-between">
+                <div className="flex items-center gap-2">
+                  <Network className="w-4 h-4 text-red-500" />
+                  Missing Requirements / Clarifications
+                </div>
+                <span className="bg-red-500/10 text-red-500 px-2 py-0.5 rounded text-xs font-medium">
+                  {missingRequirements.length} Identified
+                </span>
+              </CardTitle>
+            </CardHeader>
+            <CardContent className="p-4">
+              {missingRequirements.length > 0 ? (
+                <Accordion type="single" collapsible className="w-full">
+                  {missingRequirements.map((req) => (
+                    <AccordionItem key={req.id} value={req.id} className="border-zinc-800">
+                      <AccordionTrigger className="text-white hover:text-red-400 hover:no-underline py-4">
+                        <div className="flex items-center gap-3 text-left">
+                          <div className="w-4 h-4 rounded-full bg-red-500/20 border border-red-500/30 flex-shrink-0" />
+                          <span className="font-semibold">{req.title}</span>
+                        </div>
+                      </AccordionTrigger>
+                      <AccordionContent className="text-zinc-400">
+                        <p className="mb-4 leading-relaxed">{req.description}</p>
+                        <div className="flex items-center gap-2 text-xs bg-zinc-950 px-2.5 py-1.5 rounded-md border border-zinc-800 w-fit">
+                          <span className="text-zinc-500">Related Area:</span>
+                          <span className="text-white font-medium">{req.feature}</span>
+                        </div>
+                      </AccordionContent>
+                    </AccordionItem>
+                  ))}
+                </Accordion>
+              ) : (
+                <div className="text-center py-6 text-zinc-500 text-sm">All core requirements are clearly defined.</div>
+              )}
+            </CardContent>
+          </Card>
+        </div>
+
+        {/* Panel 3: Metrics & Overview (col-span-3) */}
+        <div className="lg:col-span-3 space-y-6 flex flex-col">
+
+          <Card className="bg-zinc-900 border-zinc-800">
+            <CardHeader className="pb-2">
+              <CardTitle className="text-white text-sm flex items-center gap-2">
+                <FileText className="w-4 h-4 text-primary" />
+                PRD Health
+              </CardTitle>
+            </CardHeader>
+            <CardContent>
+              <div className="text-4xl font-black text-white mb-1">
+                {data.healthScore.score}<span className="text-xl text-zinc-500 font-bold">/100</span>
+              </div>
+              <p className="text-xs text-zinc-500">Based on clarity and completeness.</p>
+            </CardContent>
+          </Card>
+
+          <Card className="bg-zinc-900 border-zinc-800">
+            <CardHeader className="pb-2">
+              <CardTitle className="text-white text-sm flex items-center gap-2">
+                <Zap className="w-4 h-4 text-amber-500" />
+                Project Complexity
+              </CardTitle>
+            </CardHeader>
+            <CardContent>
+              <div className="text-3xl font-bold text-white mb-1">{overallComplexity}</div>
+              <p className="text-xs text-zinc-500">Derived from {totalTasks} architectural tasks.</p>
+            </CardContent>
+          </Card>
+
+          <Card className="bg-zinc-900 border-zinc-800">
+            <CardHeader className="pb-2">
+              <CardTitle className="text-white text-sm flex items-center gap-2">
+                <Clock className="w-4 h-4 text-blue-400" />
+                Estimated Timeline
+              </CardTitle>
+            </CardHeader>
+            <CardContent>
+              <div className="text-3xl font-bold text-white mb-1">~{estimatedWeeks} Weeks</div>
+              <p className="text-xs text-zinc-500">Assumes standard agile velocity.</p>
+            </CardContent>
+          </Card>
+
+
+
         </div>
       </div>
     </DashboardLayout>

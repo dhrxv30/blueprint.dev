@@ -1,0 +1,276 @@
+// src/pages/Overview.tsx
+import { useEffect, useState } from "react";
+import { useNavigate } from "react-router-dom";
+import DashboardLayout from "@/components/layout/DashboardLayout";
+import { Card, CardContent } from "@/components/ui/card";
+import { Badge } from "@/components/ui/badge";
+import { Button } from "@/components/ui/button";
+import { cn } from "@/lib/utils";
+import { ArrowRight, Zap, Target, BarChart3, ListChecks, Clock } from "lucide-react";
+
+interface OverviewData {
+  name: string;
+  description: string;
+  healthScore: number;
+  completeness: number;
+  complexity: string;
+  timeline: string;
+  features: any[];
+  stats: {
+    features: number;
+    tasks: number;
+    sprints: number;
+    ambiguities: number;
+  };
+}
+
+const fallbackData: OverviewData = {
+  name: "Loading Project...",
+  description: "Analyzing your PRD to generate a comprehensive architecture roadmap.",
+  healthScore: 0,
+  completeness: 0,
+  complexity: "Calculating",
+  timeline: "...",
+  features: [],
+  stats: { features: 0, tasks: 0, sprints: 0, ambiguities: 0 }
+};
+
+export default function Overview() {
+  const navigate = useNavigate();
+  const [data, setData] = useState<OverviewData>(fallbackData);
+
+  useEffect(() => {
+    const rawData = localStorage.getItem("blueprint_project_data");
+    if (rawData) {
+      try {
+        const parsed = JSON.parse(rawData);
+
+        // Safely extract arrays
+        const aiFeatures = parsed.features || [];
+        const aiTasks = parsed.tasks || [];
+        const aiStories = parsed.stories || [];
+        const aiSprints = parsed.sprints || [];
+        const aiAmbiguities = parsed.ambiguities || [];
+
+        // Calculate completeness based on generated architecture modules
+        let generatedModules = 0;
+        const expectedModules = 9;
+        
+        if (aiFeatures.length > 0) generatedModules++;
+        if (aiStories.length > 0) generatedModules++;
+        if (aiTasks.length > 0) generatedModules++;
+        if (aiSprints.length > 0) generatedModules++;
+        if (parsed.architecture && Object.keys(parsed.architecture).length > 0) generatedModules++;
+        if (parsed.codeStructure && parsed.codeStructure.length > 0) generatedModules++;
+        if (parsed.tests && parsed.tests.length > 0) generatedModules++;
+        if (parsed.traceability && Object.keys(parsed.traceability).length > 0) generatedModules++;
+        if (parsed.devops && Object.keys(parsed.devops).length > 0) generatedModules++;
+
+        const healthScore = parsed.healthScore?.score || 0;
+        const ambiguityPenalty = (aiAmbiguities.length * 0.1); // Deduct 0.1% per ambiguity
+        const moduleProgress = (generatedModules / expectedModules) * 100;
+        
+        // Completeness is a blend of module progress and health, penalized by ambiguities
+        const calculatedCompleteness = Math.max(0, Math.min(100, Math.round(
+          (moduleProgress * 0.6) + (healthScore * 0.4) - ambiguityPenalty
+        ))) || 0;
+
+        // Dynamic metrics based on AI output
+        const totalTasks = aiTasks.length;
+        const calculatedComplexity = totalTasks > 50 ? "High" : totalTasks > 20 ? "Medium" : "Low";
+        const estimatedWeeks = Math.max(1, Math.ceil(totalTasks / 15)); // Assuming 15 tasks/week
+
+        // Safely format features using actual counts from stories and tasks
+        const formattedFeatures = aiFeatures.map((f: any, i: number) => {
+          const featureId = typeof f === 'string' ? `feat-${i}` : (f.id || `feat-${i}`);
+          const featureName = typeof f === 'string' ? f : (f.title || f.name || "Untitled Feature");
+          
+          // Filter stories linked to this feature
+          const featureStories = aiStories.filter((s: any) => s.featureId === featureId);
+          // Filter tasks linked to this feature
+          const featureTasks = aiTasks.filter((t: any) => t.featureId === featureId);
+
+          return {
+            id: featureId,
+            name: featureName,
+            stories: featureStories.length || (typeof f === 'object' ? f.storyCount : 0) || 0,
+            tasks: featureTasks.length || (typeof f === 'object' ? f.taskCount : 0) || 0,
+            complexity: (typeof f === 'object' && f.complexity) ? f.complexity : "Medium"
+          };
+        });
+
+        setData({
+          name: parsed.projectName || "Untitled Project",
+          description: "AI-generated architecture roadmap based on your uploaded PRD requirements. The pipeline has successfully extracted features, stories, and engineering tasks.",
+          healthScore: healthScore,
+          completeness: calculatedCompleteness, // Dynamic completeness score based on health and modules
+          complexity: calculatedComplexity,
+          timeline: `${estimatedWeeks} Weeks`,
+          features: formattedFeatures,
+          stats: {
+            features: aiFeatures.length,
+            tasks: aiTasks.length,
+            sprints: aiSprints.length,
+            ambiguities: aiAmbiguities.length
+          }
+        });
+
+      } catch (error) {
+        console.error("Error parsing overview data", error);
+      }
+    }
+  }, []);
+
+  const handleDownloadRequestly = async () => {
+    try {
+      const projectId = localStorage.getItem("blueprint_project_id");
+      if (!projectId) {
+         console.warn("No active project ID found in localStorage");
+         return;
+      }
+
+      const res = await fetch(`http://localhost:5000/api/projects/${projectId}/requestly-export`);
+      if (!res.ok) throw new Error("Failed to fetch Requestly config");
+      
+      const config = await res.json();
+      
+      // Trigger download
+      const blob = new Blob([JSON.stringify(config, null, 2)], { type: "application/json" });
+      const url = window.URL.createObjectURL(blob);
+      const a = document.createElement("a");
+      a.href = url;
+      a.download = `requestly-rules-mocks-${data.name.replace(/\s+/g, '-').toLowerCase()}.json`;
+      document.body.appendChild(a);
+      a.click();
+      document.body.removeChild(a);
+      window.URL.revokeObjectURL(url);
+    } catch (err) {
+      console.error("Error downloading Requestly config:", err);
+      // Fallback: If not found in DB (e.g. old project), try reading from local storage if appended there
+      const rawData = localStorage.getItem("blueprint_project_data");
+      if (rawData) {
+         try {
+             const parsed = JSON.parse(rawData);
+             if (parsed.requestlyConfig) {
+                  const blob = new Blob([JSON.stringify(parsed.requestlyConfig, null, 2)], { type: "application/json" });
+                  const url = window.URL.createObjectURL(blob);
+                  const a = document.createElement("a");
+                  a.href = url;
+                  a.download = `requestly-rules-mocks-local-${data.name.replace(/\s+/g, '-').toLowerCase()}.json`;
+                  document.body.appendChild(a);
+                  a.click();
+
+                  document.body.removeChild(a);
+                  window.URL.revokeObjectURL(url);
+             }
+         } catch(e) {}
+      }
+    }
+  };
+
+  return (
+    <DashboardLayout>
+      <div className="space-y-8 max-w-6xl mx-auto">
+        {/* Header */}
+        <div className="flex flex-col md:flex-row justify-between items-start md:items-end gap-6">
+          <div className="flex-1">
+            <div className="flex items-center gap-3 mb-2">
+              <Badge variant="outline" className="bg-primary/10 text-primary border-primary/20 px-3 py-1 text-xs font-bold uppercase tracking-wider">
+                Active Project
+              </Badge>
+              <span className="text-zinc-500 text-sm font-medium">Pipeline Complete</span>
+            </div>
+            <h1 className="text-4xl font-bold text-white tracking-tight leading-tight">{data.name}</h1>
+            <p className="text-zinc-400 mt-3 text-lg leading-relaxed max-w-3xl">{data.description}</p>
+          </div>
+          <div className="flex flex-col sm:flex-row gap-3">
+             <Button onClick={handleDownloadRequestly} className="bg-blue-600 hover:bg-blue-700 text-white gap-2 shadow-lg h-11 px-6">
+              <Zap className="w-4 h-4" /> Download Requestly Rules
+            </Button>
+            <Button onClick={() => navigate("/dashboard/analysis")} className="bg-primary hover:brightness-110 text-white gap-2 shadow-lg glow-orange h-11 px-6">
+              View Analysis <ArrowRight className="w-4 h-4" />
+            </Button>
+          </div>
+        </div>
+
+        {/* Metrics Grid */}
+        <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-6">
+          {[
+            { label: 'PRD Health', value: `${data.healthScore}/100`, color: 'text-primary', icon: BarChart3, desc: 'Overall requirement quality' },
+            { label: 'Completeness', value: `${data.completeness}%`, color: 'text-blue-400', icon: Target, desc: 'Architecture mapping progress' },
+            { label: 'Complexity', value: data.complexity, color: 'text-amber-400', icon: Zap, desc: 'Technical implementation difficulty' },
+            { label: 'Estimate Timeline', value: data.timeline, color: 'text-purple-400', icon: Clock, desc: 'Projected delivery duration' },
+          ].map(m => (
+            <Card key={m.label} className="bg-zinc-900/50 border-zinc-800 backdrop-blur-sm group hover:border-zinc-700 transition-all">
+              <CardContent className="p-6">
+                <div className="flex justify-between items-start mb-4">
+                  <p className="text-xs text-zinc-500 uppercase tracking-widest font-bold">{m.label}</p>
+                  <m.icon className={cn('w-4 h-4', m.color)} />
+                </div>
+                <p className={cn('text-3xl font-black tracking-tight mb-1', m.color)}>{m.value}</p>
+                <p className="text-sm text-zinc-500">{m.desc}</p>
+              </CardContent>
+            </Card>
+          ))}
+        </div>
+
+        {/* Breakdown Stats */}
+        <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
+          {[
+            { label: 'Core Features', value: data.stats.features },
+            { label: 'Total Tasks', value: data.stats.tasks },
+            { label: 'Planned Sprints', value: data.stats.sprints },
+            { label: 'Ambiguities Found', value: data.stats.ambiguities },
+          ].map(s => (
+            <div key={s.label} className="rounded-2xl border border-zinc-800/50 bg-zinc-900/30 p-5 flex flex-col items-center justify-center text-center">
+              <p className="text-xs text-zinc-500 font-bold mb-1 uppercase tracking-wider">{s.label}</p>
+              <p className="text-3xl text-white font-black">{s.value}</p>
+            </div>
+          ))}
+        </div>
+
+        {/* Core Features Extracted Section */}
+        <div className="space-y-4 py-4">
+          <div className="flex items-center justify-between">
+            <h3 className="text-xl font-bold text-white flex items-center gap-2">
+              <ListChecks className="w-5 h-5 text-primary" />
+              Core Features Extracted
+            </h3>
+            <Button variant="link" onClick={() => navigate("/dashboard/analysis")} className="text-zinc-500 hover:text-white p-0 h-auto">
+              View Feature Details
+            </Button>
+          </div>
+
+          <div className="space-y-2">
+            {data.features.length > 0 ? (
+              data.features.map((feature, i) => (
+                <div key={i} className="flex flex-col sm:flex-row sm:items-center justify-between p-4 bg-zinc-900/30 border border-zinc-800 hover:bg-zinc-900/50 transition-colors rounded-lg gap-4">
+                  <span className="text-sm font-semibold text-white">{feature.name}</span>
+                  <div className="flex items-center gap-6">
+                    <div className="flex items-center gap-4 text-xs text-zinc-500 font-medium">
+                      <span>{feature.stories} stories</span>
+                      <span>{feature.tasks} tasks</span>
+                    </div>
+                    <Badge variant="outline" className={cn(
+                      'rounded-md px-2 py-0.5 text-[10px] font-black uppercase tracking-tight w-16 text-center justify-center',
+                      feature.complexity === 'Critical' ? 'text-red-400 bg-red-500/10 border-red-500/20' :
+                        feature.complexity === 'High' ? 'text-orange-400 bg-orange-500/10 border-orange-500/20' :
+                          'text-yellow-400 bg-yellow-500/10 border-yellow-500/20'
+                    )}>
+                      {feature.complexity}
+                    </Badge>
+                  </div>
+                </div>
+              ))
+            ) : (
+              <div className="p-8 text-center border border-dashed border-zinc-800 rounded-lg text-zinc-500">
+                No features found. Check your PRD analysis.
+              </div>
+            )}
+          </div>
+        </div>
+
+      </div>
+    </DashboardLayout>
+  );
+}

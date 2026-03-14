@@ -1,18 +1,72 @@
-import { useState, useCallback, useEffect, useMemo } from "react";
+// src/pages/Architecture.tsx
+import { useState, useCallback, useEffect } from "react";
 import { useNavigate } from "react-router-dom";
 import DashboardLayout from "@/components/layout/DashboardLayout";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { useToast } from "@/hooks/use-toast";
-import { 
-  Server, Database, Cloud, Globe, Lock, CreditCard,
-  ArrowRight, Download, Code2, Box, AlertCircle, Loader2
+import {
+  Server,
+  Database,
+  Cloud,
+  Globe,
+  Lock,
+  CreditCard,
+  ArrowRight,
+  Code2,
+  Box,
+  Loader2,
+  AlertCircle
 } from "lucide-react";
-import { 
-  ReactFlow, Background, Controls, useNodesState, 
-  useEdgesState, Handle, Position 
+import {
+  ReactFlow,
+  Background,
+  Controls,
+  useNodesState,
+  useEdgesState,
+  Handle,
+  Position,
+  ReactFlowProvider,
+  useReactFlow
 } from '@xyflow/react';
 import '@xyflow/react/dist/style.css';
+import { toPng } from 'html-to-image';
+import dagre from 'dagre';
+
+const dagreGraph = new dagre.graphlib.Graph();
+dagreGraph.setDefaultEdgeLabel(() => ({}));
+
+const nodeWidth = 150;
+const nodeHeight = 120;
+
+const getLayoutedElements = (nodes: any[], edges: any[], direction = 'TB') => {
+  dagreGraph.setGraph({ rankdir: direction });
+
+  nodes.forEach((node) => {
+    dagreGraph.setNode(node.id, { width: nodeWidth, height: nodeHeight });
+  });
+
+  edges.forEach((edge) => {
+    dagreGraph.setEdge(edge.source, edge.target);
+  });
+
+  dagre.layout(dagreGraph);
+
+  nodes.forEach((node) => {
+    const nodeWithPosition = dagreGraph.node(node.id);
+    node.targetPosition = direction === 'LR' ? 'left' : 'top';
+    node.sourcePosition = direction === 'LR' ? 'right' : 'bottom';
+
+    node.position = {
+      x: nodeWithPosition.x - nodeWidth / 2,
+      y: nodeWithPosition.y - nodeHeight / 2,
+    };
+
+    return node;
+  });
+
+  return { nodes, edges };
+};
 
 const iconMap: Record<string, any> = {
   gateway: Globe,
@@ -29,21 +83,24 @@ const iconMap: Record<string, any> = {
 // CUSTOM NODE
 // ==========================================
 const BlueprintNode = ({ data, selected }: any) => {
-  const Icon = iconMap[data.type] || iconMap.default;
-  
+  // THE FIX: Safely fallback to an empty object if data is completely missing
+  const safeData = data || {};
+  const nodeType = safeData.type ? safeData.type.toLowerCase() : 'default';
+  const Icon = iconMap[nodeType] || iconMap.default;
+
   return (
     <div className="flex flex-col items-center gap-2 group transition-all w-32">
       <Handle type="target" position={Position.Top} className="w-2 h-2 bg-primary border-none" />
       <div className={`
         w-16 h-16 rounded-xl border-2 flex items-center justify-center transition-all duration-200 bg-zinc-950
-        ${selected 
-          ? "border-primary text-primary shadow-[0_0_20px_-5px_rgba(249,115,22,0.5)] scale-110 z-10" 
+        ${selected
+          ? "border-primary text-primary shadow-[0_0_20px_-5px_rgba(249,115,22,0.5)] scale-110 z-10"
           : "border-zinc-700 text-zinc-400 hover:border-zinc-500 hover:text-white"}
       `}>
         <Icon className="w-8 h-8" />
       </div>
       <span className={`text-[10px] font-medium px-2 py-1 rounded-md text-center truncate w-full ${selected ? "bg-primary/10 text-primary" : "bg-zinc-900 text-zinc-400"}`}>
-        {data.label || "Unknown Node"}
+        {safeData.label || "Unknown Node"}
       </span>
       <Handle type="source" position={Position.Bottom} className="w-2 h-2 bg-primary border-none" />
     </div>
@@ -52,10 +109,14 @@ const BlueprintNode = ({ data, selected }: any) => {
 
 const nodeTypes = { blueprint: BlueprintNode };
 
-export default function Architecture() {
+// ==========================================
+// INTERNAL CONTENT COMPONENT
+// ==========================================
+function ArchitectureContent() {
   const navigate = useNavigate();
   const { toast } = useToast();
-  
+  const { getNodes } = useReactFlow();
+
   const [nodes, setNodes, onNodesChange] = useNodesState([]);
   const [edges, setEdges, onEdgesChange] = useEdgesState([]);
   const [selectedNodeData, setSelectedNodeData] = useState<any>(null);
@@ -64,7 +125,6 @@ export default function Architecture() {
   const loadData = useCallback(async () => {
     setLoading(true);
     try {
-      // 1. Try LocalStorage first
       const rawData = localStorage.getItem("blueprint_project_data");
       let architectureData = null;
 
@@ -73,7 +133,6 @@ export default function Architecture() {
         architectureData = project.architecture;
       }
 
-      // 2. If no local data, fallback to API
       if (!architectureData || !architectureData.nodes) {
         toast({
           variant: "destructive",
@@ -84,19 +143,48 @@ export default function Architecture() {
       }
 
       if (architectureData && architectureData.nodes?.length > 0) {
+        // THE FIX: Bulletproof data mapping. We force everything into the 'data' object.
         const formattedNodes = architectureData.nodes
-          .filter((n: any) => n && n.id) // Filter out nulls
-          .map((n: any, index: number) => ({
-            ...n,
-            type: 'blueprint',
-            // CRITICAL FIX: Ensure x/y always exist to prevent the "reading x" error
-            position: (n.position && typeof n.position.x === 'number') 
-              ? n.position 
-              : { x: (index % 3) * 250, y: Math.floor(index / 3) * 180 }
-          }));
-        
-        setNodes(formattedNodes);
-        setEdges(architectureData.edges || []);
+          .filter((n: any) => n && n.id) 
+          .map((n: any, index: number) => {
+            // Find the data payload whether the AI nested it or kept it flat
+            const innerData = n.data || n; 
+
+            return {
+              id: n.id,
+              type: 'blueprint', // This tells ReactFlow to use our custom component
+              position: { x: 0, y: 0 },
+              // We explicitly build the required data object here
+              data: {
+                label: innerData.label || innerData.name || "Service Node",
+                type: innerData.type || "service", 
+                description: innerData.description || "",
+                tech: innerData.tech || ""
+              }
+            };
+          });
+
+        // Safely format edges so they don't break if IDs are missing
+        const formattedEdges = (architectureData.edges || []).map((e: any, i: number) => {
+            const source = e.source || e.from;
+            const target = e.target || e.to;
+            return {
+              ...e,
+              source,
+              target,
+              id: e.id || `edge-${i}-${source}-${target}`,
+              animated: true,
+              style: { stroke: '#52525b', strokeWidth: 2 }
+            };
+        });
+
+        const { nodes: layoutedNodes, edges: layoutedEdges } = getLayoutedElements(
+          formattedNodes,
+          formattedEdges
+        );
+
+        setNodes(layoutedNodes);
+        setEdges(layoutedEdges);
         if (formattedNodes.length > 0) setSelectedNodeData(formattedNodes[0].data);
       }
     } catch (e) {
@@ -111,6 +199,47 @@ export default function Architecture() {
   const onNodeClick = useCallback((_: React.MouseEvent, node: any) => {
     setSelectedNodeData(node.data);
   }, []);
+
+  const handleExport = async () => {
+    const currentNodes = getNodes();
+    if (currentNodes.length === 0) return;
+
+    const viewportWrap = document.querySelector('.react-flow__viewport') as HTMLElement;
+    if (!viewportWrap) return;
+
+    toast({
+      title: "Exporting Diagram",
+      description: "Preparing your architecture graph as a high-res PNG...",
+    });
+
+    try {
+      const dataUrl = await toPng(viewportWrap, {
+        backgroundColor: '#09090b',
+        style: {
+          width: '1200px',
+          height: '800px',
+          transform: 'none',
+        },
+      });
+
+      const link = document.createElement('a');
+      link.download = 'architecture-diagram.png';
+      link.href = dataUrl;
+      link.click();
+
+      toast({
+        title: "Success",
+        description: "Architecture diagram exported successfully.",
+      });
+    } catch (err) {
+      console.error(err);
+      toast({
+        title: "Export Failed",
+        description: "There was an error generating the PNG. Please try again.",
+        variant: "destructive",
+      });
+    }
+  };
 
   if (loading) {
     return (
@@ -148,8 +277,8 @@ export default function Architecture() {
           <p className="text-zinc-400 mt-1">Interactive map of generated services and databases.</p>
         </div>
         <div className="flex gap-3">
-          <Button onClick={() => navigate('/dashboard/code')} className="bg-primary hover:brightness-110 text-white gap-2">
-            <Code2 className="w-4 h-4" /> Generate Code
+          <Button onClick={handleExport} className="bg-orange-500 hover:bg-orange-600 text-white gap-2 border-0">
+             Export PNG
           </Button>
         </div>
       </div>
@@ -188,7 +317,7 @@ export default function Architecture() {
                 <div className="flex items-center gap-4">
                   <div className="w-12 h-12 rounded-lg bg-primary/10 border border-primary/20 flex items-center justify-center text-primary">
                     {(() => {
-                      const Icon = iconMap[selectedNodeData.type] || iconMap.default;
+                      const Icon = iconMap[selectedNodeData.type?.toLowerCase()] || iconMap.default;
                       return <Icon className="w-6 h-6" />;
                     })()}
                   </div>
@@ -199,7 +328,9 @@ export default function Architecture() {
                 </div>
                 <div>
                   <h3 className="text-sm font-medium text-white mb-2">Description</h3>
-                  <p className="text-sm text-zinc-400 leading-relaxed">{selectedNodeData.description || "No description provided."}</p>
+                  <p className="text-sm text-zinc-400 leading-relaxed line-clamp-3" title={selectedNodeData.description}>
+                    {selectedNodeData.description || "No description provided."}
+                  </p>
                 </div>
                 {selectedNodeData.tech && (
                   <div>
@@ -209,9 +340,6 @@ export default function Architecture() {
                     </div>
                   </div>
                 )}
-                <Button onClick={() => navigate('/dashboard/traceability')} className="w-full bg-zinc-100 text-zinc-900 hover:bg-zinc-200 mt-auto">
-                  View Traceability <ArrowRight className="w-4 h-4 ml-2" />
-                </Button>
               </>
             ) : (
               <div className="text-zinc-500 text-center mt-20">Select a node to view its details</div>
@@ -220,5 +348,16 @@ export default function Architecture() {
         </Card>
       </div>
     </DashboardLayout>
+  );
+}
+
+// ==========================================
+// EXPORTED COMPONENT (WITH PROVIDER)
+// ==========================================
+export default function Architecture() {
+  return (
+    <ReactFlowProvider>
+      <ArchitectureContent />
+    </ReactFlowProvider>
   );
 }

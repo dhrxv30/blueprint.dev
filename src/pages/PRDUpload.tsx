@@ -26,6 +26,7 @@ export default function PRDUpload() {
   const [error, setError] = useState<string | null>(null);
 
   const projectName = location.state?.projectName || "Untitled Project";
+  const isUpdateFlow = location.state?.isUpdateFlow || false;
 
   /*
   ==========================
@@ -129,8 +130,8 @@ export default function PRDUpload() {
   PROCESS PRD
   ==========================
   */
-
   const handleProcess = async () => {
+    console.log("PRD UPLOAD - Running Version 2.2 (Metrics Sync Check)");
 
     if (!file) return;
 
@@ -140,7 +141,6 @@ export default function PRDUpload() {
     localStorage.removeItem("blueprint_project_data");
 
     try {
-
       const { data } = await supabase.auth.getUser();
       const user = data.user;
 
@@ -153,6 +153,8 @@ export default function PRDUpload() {
       formData.append("prd", file);
       formData.append("profileId", user.id);
       formData.append("projectName", projectName);
+      // ---> ADDED LINE HERE <---
+      formData.append("email", user.email || "");
 
       const response = await fetch(
         "http://localhost:5000/api/prd/upload",
@@ -171,7 +173,7 @@ export default function PRDUpload() {
       const rawData = result?.data ?? {};
 
       const safeData = {
-
+        id: result.projectId, // Store the real ID from DB
         projectName:
           projectName !== "Untitled Project"
             ? projectName
@@ -180,6 +182,7 @@ export default function PRDUpload() {
         features: rawData.features ?? [],
         stories: rawData.stories ?? [],
         tasks: rawData.tasks ?? [],
+        sprints: rawData.sprints ?? [],
 
         architecture:
           rawData.architecture ?? { nodes: [], edges: [] },
@@ -187,17 +190,29 @@ export default function PRDUpload() {
         traceability:
           rawData.traceability ?? { nodes: [], edges: [] },
 
+        codeStructure: rawData.codeStructure ?? [],
+        tests: rawData.tests ?? [],
+        devops: rawData.devops ?? {},
+
         healthScore:
           rawData.healthScore ?? {
             score: 0,
             issues: ["Analysis incomplete"]
-          }
+          },
+
+        ambiguities: rawData.ambiguities ?? [],
+        clarifications: rawData.clarifications ?? []
       };
 
       localStorage.setItem(
         "blueprint_project_data",
         JSON.stringify(safeData)
       );
+
+      // Cache the project ID for subsequent lookups (like Requestly download)
+      if (result.projectId) {
+        localStorage.setItem("blueprint_project_id", result.projectId);
+      }
 
       toast({
         title: "Analysis Complete",
@@ -207,19 +222,26 @@ export default function PRDUpload() {
       navigate("/dashboard/analysis");
 
     } catch (err: any) {
-
       console.error("Upload error:", err);
-
       const message = err?.message || "Upload failed";
+      
+      // Trigger Requestly SessionBook export to capture the network trace and video for debugging
+      // @ts-ignore
+      if (typeof window !== 'undefined' && window.RequestlySessionBook) {
+        // @ts-ignore
+        window.RequestlySessionBook.save();
+        toast({
+           title: "Session Recorded for Debugging",
+           description: "A Requestly SessionBook debug report is being generated to help diagnose this pipeline failure.",
+        });
+      }
 
       setError(message);
-
       toast({
         variant: "destructive",
         title: "Upload Failed",
         description: message
       });
-
     } finally {
 
       setIsUploading(false);
@@ -243,14 +265,16 @@ export default function PRDUpload() {
 
           <h1 className="text-3xl font-bold text-white">
 
-            {projectName === "Untitled Project"
-              ? "Upload PRD"
-              : `PRD for: ${projectName}`}
+            {isUpdateFlow
+              ? `Refining Roadmap: ${projectName}`
+              : projectName === "Untitled Project"
+                ? "Upload PRD"
+                : `New Project: ${projectName}`}
 
           </h1>
 
           <p className="text-zinc-400 mt-2">
-            Upload a PRD. Gemini will generate backlog, architecture and tests.
+            Upload your PRD to extract features, architecture, and engineering tasks.
           </p>
 
         </div>
@@ -271,11 +295,10 @@ export default function PRDUpload() {
 
           <Card
             className={`bg-zinc-900 border-2 border-dashed p-16 text-center
-            ${
-              isDragging
+            ${isDragging
                 ? "border-primary bg-primary/10"
                 : "border-zinc-700"
-            }`}
+              }`}
             onDragOver={handleDragOver}
             onDragLeave={handleDragLeave}
             onDrop={handleDrop}
@@ -354,20 +377,20 @@ export default function PRDUpload() {
               <Button
                 onClick={handleProcess}
                 disabled={isUploading}
-                className="gap-2"
+                className="gap-2 bg-primary hover:brightness-110 text-white"
               >
 
                 {isUploading ? (
 
                   <>
                     <Loader2 className="w-4 h-4 animate-spin" />
-                    Processing...
+                    Analyzing...
                   </>
 
                 ) : (
 
                   <>
-                    Begin Analysis
+                    {isUpdateFlow ? "Analyze Updates" : "Begin Analysis"}
                     <ArrowRight className="w-4 h-4" />
                   </>
 
